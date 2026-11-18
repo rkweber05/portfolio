@@ -1,0 +1,17 @@
+# O Caddy obtém e renova o certificado HTTPS (Let's Encrypt) sozinho.
+# Pré-requisito: o DNS já aponta para a VPS e as portas 80/443 estão abertas.
+
+rodrigoweber.com.br {
+	encode zstd gzip
+
+	reverse_proxy app:3000 {
+		# Sem o proxy do Cloudflare na frente, qualquer visitante poderia forjar
+		# este cabeçalho para burlar o limite por IP. Removemos na entrada.
+		# Ao ligar o proxy do Cloudflare, revisar isto (ver README).
+		header_up -CF-Connecting-IP
+	}
+}
+
+www.rodrigoweber.com.br {
+	redir https://rodrigoweber.com.br{uri} permanent
+}

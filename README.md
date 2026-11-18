@@ -54,7 +54,8 @@ Se o e-mail falhar, a mensagem continua salva com `email_sent_at = NULL` e o vis
 ## Estrutura
 
 ```
-.github/workflows/   CI (o deploy entra aqui depois)
+.github/workflows/   CI/CD: checagem, build da imagem, deploy na VPS
+deploy/              Compose de produção, Caddyfile e modelo do .env da VPS
 db/init.sql          cria a tabela na primeira subida do banco
 src/app/             página e rotas da API
 src/components/      formulário e barras em escala
@@ -62,3 +63,19 @@ src/lib/             conteúdo, validação, banco, e-mail, limite de requisiç�
 Dockerfile           build em 3 estágios, imagem final só com o necessário
 docker-compose.yml   app + db + mailpit
 ```
+
+## Deploy
+
+```
+push na main ─▶ check (typecheck) ─▶ publish (imagem no GHCR, tag = SHA do commit)
+                                  ─▶ deploy (SSH na VPS: pull + up -d --wait) ─▶ teste em /api/health
+```
+
+Na VPS, em `~/app/`: `docker-compose.yml`, `Caddyfile`, `init.sql` (enviados pelo pipeline) e `.env` (criado à mão, nunca versionado).
+
+**Secrets do GitHub** (Settings > Secrets and variables > Actions): `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, `VPS_HOST_KEY`.
+
+**Rollback:** cada deploy usa uma imagem com o SHA do commit. Para voltar, rode na VPS
+`cd ~/app && IMAGE=ghcr.io/<usuario>/<repo>:<sha-antigo> docker compose up -d`.
+
+**Ao ligar o proxy do Cloudflare:** o IP real do visitante passa a vir em `CF-Connecting-IP`. Remova o `header_up -CF-Connecting-IP` do Caddyfile e restrinja as portas 80/443 da VPS aos IPs do Cloudflare.

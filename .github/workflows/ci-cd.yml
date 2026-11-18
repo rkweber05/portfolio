@@ -1,0 +1,103 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  SITE_URL: https://rodrigoweber.com.br
+
+jobs:
+  # 1) Roda em todo push e pull request.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Build da imagem (só em PR; no main o job publish já faz)
+        if: github.event_name == 'pull_request'
+        run: docker build -t portfolio:ci .
+
+  # 2) Só no main: constrói a imagem e publica no GHCR.
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nome da imagem (o GHCR exige minúsculas)
+        id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 3) Entra na VPS por SSH e atualiza os containers.
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # Chave do servidor fixada: se alguém se passar pela VPS, a conexão falha.
+          printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
+
+      - name: Enviar arquivos de configuração
+        env:
+          TARGET: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
+        run: |
+          OPTS="-i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          ssh $OPTS "$TARGET" "mkdir -p ~/app"
+          scp $OPTS deploy/docker-compose.prod.yml "$TARGET:app/docker-compose.yml"
+          scp $OPTS deploy/Caddyfile "$TARGET:app/Caddyfile"
+          scp $OPTS db/init.sql "$TARGET:app/init.sql"
+
+      - name: Atualizar containers
+        env:
+          TARGET: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OPTS="-i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          # O token vai pelo stdin, nunca na linha de comando.
+          printf '%s' "$GHCR_TOKEN" | ssh $OPTS "$TARGET" "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
+          ssh $OPTS "$TARGET" "cd ~/app && export IMAGE='$IMAGE' && docker compose pull && docker compose up -d --wait --remove-orphans && docker image prune -f && docker logout ghcr.io"
+
+      - name: Teste final no site
+        run: curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "$SITE_URL/api/health"
