@@ -23,8 +23,8 @@ export const viewport: Viewport = {
   ],
 };
 
-// Roda antes da primeira pintura: aplica o tema salvo ou o preferido do sistema.
-const themeInit = `(function(){try{var t=localStorage.getItem("theme");if(t!=="light"&&t!=="dark"){t=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}document.documentElement.dataset.theme=t}catch(e){}})()`;
+// Roda antes da primeira pintura: aplica o tema salvo; sem escolha salva, o claro é o padrão.
+const themeInit = `(function(){try{var t=localStorage.getItem("theme");document.documentElement.dataset.theme=t==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}})()`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
